@@ -18,6 +18,7 @@
 import functools
 import gc
 import time
+import json
 from absl import app
 from absl import flags
 import flax
@@ -218,6 +219,7 @@ def main(unused_argv):
   gc.disable()  # Disable automatic garbage collection for efficiency.
   stats_trace = []
   reset_timer = True
+  train_time_start = time.time()
   for step, batch in zip(range(init_step, config.max_steps + 1), pdataset):
     if reset_timer:
       t_loop_start = time.time()
@@ -310,6 +312,26 @@ def main(unused_argv):
           summary_writer.image('test_pred_' + k, v, step)
         summary_writer.image('test_pred_acc', pred_acc, step)
         summary_writer.image('test_target', test_case['pixels'], step)
+  
+  
+  train_time = time.time() - train_time_start
+  # do FPS gathering 
+  test_dataset = datasets.get_dataset('test', FLAGS.data_dir, config)
+  eval_variables = jax.device_get(jax.tree_map(lambda x: x[0], state)).optimizer.target
+  time_acc, _iter = 0, 0
+  for test_case in test_dataset:
+    t_eval_start = time.time()
+    pred_color, pred_distance, pred_acc = models.render_image(
+      functools.partial(render_eval_pfn, eval_variables),
+      test_case['rays'],
+      keys[0],
+      chunk=FLAGS.chunk
+    )
+    time_acc += time.time() - t_eval_start
+    _iter += 1
+  fps = _iter / time_acc
+  with open(f"{FLAGS.train_dir}/fps_and_train-time.json", "w") as f:
+    json.dump({'FPS': fps, 'Train time': train_time}, f)
 
   if config.max_steps % config.save_every != 0:
     state = jax.device_get(jax.tree_map(lambda x: x[0], state))
